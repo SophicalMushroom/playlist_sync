@@ -70,6 +70,7 @@ def import_library(playlist_url: str, library: str, similarity_threshold: float,
 
     click.echo("Fetching playlist from YouTube…")
     playlist_entries = fetch_playlist(store.playlist_url)
+    playlist_entries.reverse()  # bottom of playlist → index 0 → prefix 00001
 
     # --- Scan local library ---
     prefix_re = re.compile(r"^\d+ - (.+)\.mp3$")

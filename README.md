@@ -53,7 +53,7 @@ playlist_sync/
 - Every tracked song (title, YouTube ID, source, date added)
 - Named external devices
 
-Songs are stored as `<prefix> - <Title>.mp3` (e.g. `00001 - Never Gonna Give You Up.mp3`), where the prefix reflects the song's position in the playlist as returned by YouTube (`00001` is the first entry).
+Songs are stored as `<prefix> - <Title>.mp3` (e.g. `00001 - Never Gonna Give You Up.mp3`), where the prefix reflects the song's position in the playlist (bottom / oldest = lowest number, top / most recently added = highest number).
 
 ---
 

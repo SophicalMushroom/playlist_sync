@@ -22,6 +22,7 @@ def run_sync(store: MetadataStore, dry_run: bool = False) -> dict:
 
     print("Fetching playlist from YouTube...")
     playlist_entries = fetch_playlist(store.playlist_url)
+    playlist_entries.reverse()  # bottom of playlist → index 0 → prefix 00001
     playlist_ids = [e["id"] for e in playlist_entries]
     playlist_id_set = set(playlist_ids)
     playlist_by_id = {e["id"]: e for e in playlist_entries}
