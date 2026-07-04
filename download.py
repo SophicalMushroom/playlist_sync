@@ -18,7 +18,7 @@ def fetch_playlist(url: str) -> list[dict]:
             "--flat-playlist", 
             "-J", 
             "--cookies-from-browser", "firefox",
-            "--extractor-args", "youtube:player-client=web,tv_embedded",
+            "--extractor-args", "youtube:player-client=android,tv_embedded",
             "--playlist-items", "1-2000",
             url
         ],
@@ -54,8 +54,7 @@ def download_song(video_id: str, output_dir: str) -> str:
             "--audio-format", "mp3",
             "--audio-quality", "0",
             "--no-playlist",
-            "--cookies-from-browser", "firefox",
-            "--extractor-args", "youtube:player-client=web,tv_embedded",
+            "--extractor-args", "youtube:player-client=android,tv_embedded",
             "--sleep-requests", "1",
             "--sleep-interval", "2",
             url,
