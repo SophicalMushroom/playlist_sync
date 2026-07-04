@@ -256,12 +256,19 @@ def import_library(playlist_url: str, library: str, similarity_threshold: float,
         insert_at = (anchor_pos + 1) if anchor_pos is not None else 0
         songs.insert(insert_at, song)
 
-    store.replace_songs(songs)
-    renumber_files(library, songs)
+    # Exclude unmatched YouTube songs (no local file) so a subsequent `sync`
+    # detects them as new and downloads them.
+    songs_to_save = [
+        s for s in songs
+        if s["source"] != "youtube" or s.get("youtube_id") in yt_to_local
+    ]
+
+    store.replace_songs(songs_to_save)
+    renumber_files(library, songs_to_save)
     store.save()
 
     # --- Summary output ---
-    manual_count  = sum(1 for s in songs if s["source"] == "manual")
+    manual_count  = sum(1 for s in songs_to_save if s["source"] == "manual")
     matched_count = len(matched_local_keys)
     missing = [
         s["title"] for s in songs
