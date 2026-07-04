@@ -9,7 +9,7 @@ description = "CLI tool to sync a YouTube playlist to a local MP3 library and ex
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.0",
-    "yt-dlp>=2024.1",
+    "yt-dlp[default]>=2025.1",
     "mutagen>=1.45",
 ]
 
