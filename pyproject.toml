@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "playlist-sync"
+version = "0.1.0"
+description = "CLI tool to sync a YouTube playlist to a local MP3 library and external devices"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0",
+    "yt-dlp>=2024.1",
+]
+
+[project.scripts]
+playlist-sync = "cli:cli"
+
+[tool.setuptools]
+py-modules = ["cli", "device", "download", "metadata", "sync", "utils"]
