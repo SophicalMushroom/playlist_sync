@@ -22,6 +22,30 @@ def clean_filename(text: str) -> str:
     return text or "untitled"
 
 
+def normalize_for_matching(text: str) -> str:
+    """Aggressively normalize a title to alphanumeric-only lowercase for fuzzy matching.
+
+    Used during import to match local files that were cleaned by different logic
+    (e.g. the old cleanText function which stripped different characters).
+    """
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^a-z0-9]", "", text.lower())
+    return text
+
+
+def read_mp3_duration(filepath: str) -> float | None:
+    """Return the duration of an MP3 file in seconds, or None on failure.
+
+    Uses mutagen for fast, pure-Python reading (no ffmpeg subprocess needed).
+    """
+    try:
+        from mutagen.mp3 import MP3
+        return MP3(filepath).info.length
+    except Exception:
+        return None
+
+
 def format_prefix(n: int, total: int) -> str:
     """Return a zero-padded numeric prefix for position *n* (1-indexed) of *total*."""
     width = max(5, len(str(total)))

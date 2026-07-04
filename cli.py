@@ -1,5 +1,6 @@
 """CLI entry point for playlist-sync."""
 
+import difflib
 import os
 import re
 import shutil
@@ -11,7 +12,7 @@ from device import sync_device
 from download import fetch_playlist
 from metadata import MetadataStore
 from sync import renumber_files, run_sync
-from utils import build_filename, clean_filename, format_prefix
+from utils import build_filename, clean_filename, format_prefix, normalize_for_matching, read_mp3_duration
 
 
 def _load_store() -> MetadataStore:
@@ -36,12 +37,27 @@ def cli() -> None:
 @cli.command("import")
 @click.option("--playlist-url", required=True, help="Full URL of the YouTube playlist to track.")
 @click.option("--library", required=True, type=click.Path(), help="Path to an existing local directory that already contains MP3 files.")
-def import_library(playlist_url: str, library: str) -> None:
+@click.option("--similarity-threshold", default=0.85, show_default=True,
+              help="Minimum similarity score (0-1) for fuzzy title matching. Lower = more lenient.")
+@click.option("--yes", "-y", is_flag=True,
+              help="Auto-accept all similarity matches without prompting.")
+@click.option("--duration-tolerance", default=5.0, show_default=True,
+              help="Maximum allowed difference in seconds between local and YouTube "
+                   "durations before a similarity match is rejected.")
+def import_library(playlist_url: str, library: str, similarity_threshold: float, yes: bool, duration_tolerance: float) -> None:
     """Register an existing MP3 folder without re-downloading anything.
 
     Fetches the playlist from YouTube, matches existing files by title,
     and registers unmatched files as manual songs.  Run 'sync' afterwards
     to download any playlist songs that are missing from the folder.
+
+    Matching is attempted in three passes (each progressively more lenient):
+      1. Exact match after clean_filename normalisation.
+      2. Alphanumeric-only match — handles apostrophes, '&', punctuation
+         differences between old downloaders and the current one.
+      3. Similarity match — handles YouTube title changes such as
+         'Official Music Video' becoming 'Official Video'.
+         Each candidate is shown for confirmation unless --yes is given.
     """
     library = os.path.abspath(library)
     if not os.path.isdir(library):
@@ -52,46 +68,168 @@ def import_library(playlist_url: str, library: str) -> None:
     except FileExistsError as exc:
         raise click.ClickException(str(exc))
 
-    click.echo("Fetching playlist from YouTube\u2026")
+    click.echo("Fetching playlist from YouTube…")
     playlist_entries = fetch_playlist(store.playlist_url)
-    playlist_entries.reverse()  # oldest first, matching internal convention
+    playlist_entries.reverse()  # oldest first → prefix 00001
 
-    # Scan the library for existing MP3s, stripping any numeric prefix to get the bare title.
+    # --- Scan local library ---
     prefix_re = re.compile(r"^\d+ - (.+)\.mp3$")
-    bare_re = re.compile(r"^(.+)\.mp3$")
-    existing_titles: dict[str, str] = {}  # lowercase clean_title -> original filename
-    existing_original_titles: dict[str, str] = {}  # lowercase -> original-case title
+    bare_re   = re.compile(r"^(.+)\.mp3$")
+
+    # exact_titles[clean_title.lower()]           → (filename, title)
+    # fuzzy_titles[normalize_for_matching(title)] → (filename, title)
+    exact_titles: dict[str, tuple[str, str]] = {}
+    fuzzy_titles: dict[str, tuple[str, str]] = {}
+
     for fname in sorted(os.listdir(library)):
         m = prefix_re.match(fname) or bare_re.match(fname)
-        if m:
-            title = clean_filename(m.group(1))
-            key = title.lower()
-            if key in existing_titles:
-                click.echo(f"  Warning: duplicate title '{title}' from '{fname}' (already from '{existing_titles[key]}')")
-                continue
-            existing_titles[key] = fname
-            existing_original_titles[key] = title
+        if not m:
+            continue
+        title = clean_filename(m.group(1))
+        exact_key = title.lower()
+        fuzzy_key = normalize_for_matching(title)
+        if exact_key not in exact_titles:
+            exact_titles[exact_key] = (fname, title)
+        if fuzzy_key and fuzzy_key not in fuzzy_titles:
+            fuzzy_titles[fuzzy_key] = (fname, title)
 
-    # Build song list in playlist order, noting which titles are already on disk.
-    songs: list[dict] = []
-    matched_titles: set[str] = set()
+    # --- Pass 1 and Pass 2 (automatic — no confirmation needed) ---
+    yt_to_local: dict[str, str] = {}       # youtube_id → local title used in metadata
+    matched_local_keys: set[str] = set()   # exact_titles keys consumed by any pass
+
     for entry in playlist_entries:
         clean_title = clean_filename(entry["title"])
+        exact_key   = clean_title.lower()
+        fuzzy_key   = normalize_for_matching(clean_title)
+
+        # Pass 1 — exact title match
+        if exact_key in exact_titles and exact_key not in matched_local_keys:
+            matched_local_keys.add(exact_key)
+            yt_to_local[entry["id"]] = exact_titles[exact_key][1]
+
+        # Pass 2 — alphanumeric-only (catches apostrophes, & etc.)
+        elif fuzzy_key and fuzzy_key in fuzzy_titles:
+            _f, local_title = fuzzy_titles[fuzzy_key]
+            local_exact_key = local_title.lower()
+            if local_exact_key not in matched_local_keys:
+                matched_local_keys.add(local_exact_key)
+                yt_to_local[entry["id"]] = local_title
+
+    # --- Pass 3 — similarity matching (requires user confirmation) ---
+    # Duration from YouTube and mutagen is used to confirm or veto candidates:
+    #   Both present, differ > --duration-tolerance → reject outright (wrong song)
+    #   Both present, within tolerance              → confirmed, show in duration note
+    #   Either unavailable                          → title similarity only
+    paren_re = re.compile(r"\([^)]*\)")   # strips parenthetical e.g. "(Official Video)"
+
+    unmatched_local = {
+        k: v for k, v in exact_titles.items() if k not in matched_local_keys
+    }
+
+    # Pre-read local MP3 durations (mutagen, ~ms each)
+    local_durations: dict[str, float | None] = {
+        k: read_mp3_duration(os.path.join(library, fname))
+        for k, (fname, _title) in unmatched_local.items()
+    }
+
+    # Collect every candidate (vid_id, yt_title, local_key, local_title, score, dur_note).
+    # We scan all unmatched pairs without committing so we can sort by score and let
+    # the best match claim each local file first.
+    Candidate = tuple  # (score, vid_id, yt_title, local_key, local_title, dur_note)
+    candidates: list[Candidate] = []
+
+    for entry in playlist_entries:
+        if entry["id"] in yt_to_local:
+            continue
+
+        clean_title  = clean_filename(entry["title"])
+        # Strip parentheticals before comparing so "(Official Music Video)" vs
+        # "(Official Video)" doesn't dominate the score
+        fuzzy_needle = normalize_for_matching(paren_re.sub("", clean_title).strip())
+        yt_duration  = entry.get("duration")
+        if not fuzzy_needle:
+            continue
+
+        best_ratio       = 0.0
+        best_local_key   = None
+        best_local_title = None
+        best_dur_note    = ""
+
+        for local_key, (_fname, local_title) in unmatched_local.items():
+            fuzzy_candidate = normalize_for_matching(paren_re.sub("", local_title).strip())
+            ratio = difflib.SequenceMatcher(None, fuzzy_needle, fuzzy_candidate).ratio()
+            if ratio <= best_ratio:
+                continue
+
+            local_dur = local_durations.get(local_key)
+            if yt_duration is not None and local_dur is not None:
+                if abs(yt_duration - local_dur) > duration_tolerance:
+                    continue  # duration mismatch — definitely not the same song
+                dur_note = (
+                    f"{int(local_dur//60)}:{int(local_dur%60):02d}"
+                    f" ≈ {int(yt_duration//60)}:{int(yt_duration%60):02d}"
+                )
+            else:
+                dur_note = "no duration"
+
+            best_ratio       = ratio
+            best_local_key   = local_key
+            best_local_title = local_title
+            best_dur_note    = dur_note
+
+        if best_ratio >= similarity_threshold and best_local_key is not None:
+            candidates.append((best_ratio, entry["id"], clean_title,
+                               best_local_key, best_local_title, best_dur_note))
+
+    # Sort best scores first so that if two YouTube entries want the same local
+    # file, the higher-confidence match gets to claim it first.
+    candidates.sort(key=lambda c: c[0], reverse=True)
+
+    # Apply candidates — auto-accept with --yes, otherwise prompt per candidate
+    similarity_matches: list[tuple[str, str, float, str]] = []  # accepted matches for summary
+    claimed_local_keys: set[str] = set()
+
+    if candidates and not yes:
+        click.echo(f"\nFound {len(candidates)} potential similarity match(es). Please review each:")
+
+    for score, vid_id, yt_title, local_key, local_title, dur_note in candidates:
+        if local_key in claimed_local_keys:
+            continue  # already claimed by a better-scoring YouTube entry
+
+        if yes:
+            accepted = True
+        else:
+            click.echo(
+                f"\n  Score: {score:.2f}  |  Duration: {dur_note}\n"
+                f"  YouTube : {yt_title}\n"
+                f"  Local   : {local_title}"
+            )
+            accepted = click.confirm("  Accept this match?", default=True)
+
+        if accepted:
+            claimed_local_keys.add(local_key)
+            matched_local_keys.add(local_key)
+            yt_to_local[vid_id] = local_title
+            similarity_matches.append((yt_title, local_title, score, dur_note))
+
+    # --- Build ordered song list ---
+    songs: list[dict] = []
+    for entry in playlist_entries:
+        # Use the local file's title if matched; otherwise use the clean YouTube title
+        title = yt_to_local.get(entry["id"], clean_filename(entry["title"]))
         songs.append({
             "youtube_id": entry["id"],
-            "title": clean_title,
+            "title": title,
             "source": "youtube",
             "added_date": date.today().isoformat(),
         })
-        if clean_title.lower() in existing_titles:
-            matched_titles.add(clean_title.lower())
 
-    # Files not matched to any playlist entry are registered as manual songs.
-    for key, _fname in existing_titles.items():
-        if key not in matched_titles:
+    # Unmatched local files → manual songs (appended after all YouTube songs)
+    for exact_key, (_fname, title) in exact_titles.items():
+        if exact_key not in matched_local_keys:
             songs.append({
                 "youtube_id": None,
-                "title": existing_original_titles[key],
+                "title": title,
                 "source": "manual",
                 "added_date": date.today().isoformat(),
             })
@@ -100,12 +238,24 @@ def import_library(playlist_url: str, library: str) -> None:
     renumber_files(library, songs)
     store.save()
 
-    manual_count = sum(1 for s in songs if s["source"] == "manual")
-    missing = [s["title"] for s in songs if s["source"] == "youtube" and s["title"].lower() not in matched_titles]
+    # --- Summary output ---
+    manual_count  = sum(1 for s in songs if s["source"] == "manual")
+    matched_count = len(matched_local_keys)
+    missing = [
+        s["title"] for s in songs
+        if s["source"] == "youtube" and s["youtube_id"] not in yt_to_local
+    ]
 
-    click.echo(f"Matched  {len(matched_titles)} existing file(s) to playlist entries.")
+    click.echo(f"\nMatched  {matched_count} existing file(s) to playlist entries.")
     if manual_count:
         click.echo(f"Imported {manual_count} manual song(s) (not in playlist).")
+
+    if similarity_matches:
+        click.echo(f"\nSimilarity-matched and accepted ({len(similarity_matches)}):")
+        for yt_title, local_title, score, dur_note in similarity_matches:
+            click.echo(f"  [{score:.2f}, {dur_note}] '{yt_title}'")
+            click.echo(f"         → '{local_title}'")
+
     if missing:
         click.echo(f"\n{len(missing)} playlist song(s) not found on disk:")
         for title in missing:

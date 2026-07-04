@@ -11,6 +11,7 @@ This repo is meant to be uploaded as the top-level `playlist_sync/` folder.
 
 - Python 3.10+
 - [FFmpeg](https://ffmpeg.org/download.html) installed and on PATH (used by yt-dlp for audio conversion)
+- `mutagen` is installed automatically and is used to read local MP3 durations during import matching
 
 ---
 
@@ -21,9 +22,9 @@ cd playlist_sync
 pip install -e .
 ```
 
-This installs the `playlist-sync` command and all Python dependencies (`click`, `yt-dlp`).
+This installs the `playlist-sync` command and all Python dependencies (`click`, `yt-dlp`, `mutagen`).
 
-Open firefox and login to youtube so that sessions cookies can be used
+If you import from a private or sign-in-restricted playlist, make sure you are logged into YouTube in Firefox, because the importer reads playlist data using Firefox browser cookies.
 
 ---
 
@@ -60,16 +61,27 @@ Songs are stored as `<prefix> - <Title>.mp3` (e.g. `00001 - Never Gonna Give You
 
 ### `import` — register an existing MP3 folder (start here if you already have files)
 
-If you already have a folder of MP3s downloaded from your playlist (plus any manual tracks), use `import` instead of `init`. It fetches the playlist from YouTube, matches your existing files by title, and registers everything **without re-downloading a single file**. Any playlist songs that are missing from the folder are noted, and a subsequent `sync` will download only those.
+If you already have a folder of MP3s downloaded from your playlist (plus any manual tracks), use `import` instead of `init`. It fetches the playlist from YouTube, matches your existing files to playlist entries, and registers everything **without re-downloading a single file**. Any playlist songs that are missing from the folder are noted, and a subsequent `sync` will download only those.
+
+Matching happens in three passes so that older local filenames can still line up with changed YouTube titles:
+
+1. Exact title match after filename cleaning.
+2. Aggressive alphanumeric-only match to handle punctuation differences such as apostrophes, `&`, and commas.
+3. Similarity match for title changes such as `Official Music Video` becoming `Official Video`.
+
+For the similarity pass, the importer also compares song length when it is available. If both local and YouTube durations are present and differ by more than 5 seconds, the match is rejected.
 
 ```bash
-playlist-sync import --playlist-url <URL> --library <PATH>
+playlist-sync import --playlist-url <URL> --library <PATH> [--similarity-threshold <N>] [--yes|-y]
 ```
 
 | Option | Required | Description |
 |---|---|---|
 | `--playlist-url` | Yes | Full URL of the YouTube playlist to track |
 | `--library` | Yes | Path to the existing directory that already contains your MP3 files |
+| `--similarity-threshold` | No | Minimum score for the third-pass title match (default `0.85`, range `0`–`1`) |
+| `--yes`, `-y` | No | Auto-accept all similarity matches without prompting |
+| `--duration-tolerance` | No | Maximum allowed difference in seconds between local and YouTube durations before a similarity match is rejected (default `5.0`) |
 
 **Examples**
 
@@ -81,18 +93,46 @@ playlist-sync import --playlist-url "https://www.youtube.com/playlist?list=PLxxx
 
 ```
 Fetching playlist from YouTube…
-Matched  138 existing file(s) to playlist entries.
+
+Found 3 potential similarity match(es). Please review each:
+
+  Score: 0.92  |  Duration: 3:45 ≈ 3:46
+  YouTube : Dua Lipa - Levitating (Official Music Video)
+  Local   : Dua Lipa - Levitating (Official Video)
+  Accept this match? [Y/n]: y
+
+  Score: 0.88  |  Duration: no duration
+  YouTube : Some Song Remastered 2024
+  Local   : Some Song
+  Accept this match? [Y/n]: n
+
+Matched  139 existing file(s) to playlist entries.
 Imported 4 manual song(s) (not in playlist).
 
-3 playlist song(s) not found on disk:
+Similarity-matched and accepted (1):
+  [0.92, 3:45 ≈ 3:46] 'Dua Lipa - Levitating (Official Music Video)'
+         → 'Dua Lipa - Levitating (Official Video)'
+
+4 playlist song(s) not found on disk:
   Brand New Song Added Yesterday
   Another Missing Track
   One More
+  Some Song Remastered 2024
 
 Run 'playlist-sync sync' to download the missing songs.
 ```
 
 > After `import` completes, all files are renumbered to match the current playlist order. Run `playlist-sync sync` to fetch any songs that weren't on disk yet.
+
+> Each similarity match is shown individually before being accepted. Rejected matches are treated as missing songs and downloaded by the next `sync` run.
+
+> Use `--yes` / `-y` to skip all prompts and auto-accept every similarity match — useful when you are confident the files are correct or when running non-interactively.
+
+> To widen or narrow what counts as a similarity match, use `--similarity-threshold` (default `0.85`). Lower values match more aggressively and should be reviewed carefully.
+
+> To relax or tighten the duration check, use `--duration-tolerance` (default `5.0`). Lower values are stricter; higher values allow more variation between local and YouTube versions.
+
+> If you are importing from a private playlist, use Firefox for the YouTube login session the importer relies on.
 
 ---
 

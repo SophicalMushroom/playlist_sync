@@ -34,7 +34,8 @@ def fetch_playlist(url: str) -> list[dict]:
         title = item.get("title", "")
         if not vid_id or title in ("[Deleted video]", "[Private video]"):
             continue
-        entries.append({"id": vid_id, "title": title})
+        # duration is in seconds (float) when available; None otherwise
+        entries.append({"id": vid_id, "title": title, "duration": item.get("duration")})
 
     print(f"Found {len(entries)} entries from {url}")
     return entries
