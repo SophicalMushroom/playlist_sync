@@ -240,7 +240,7 @@ Devices:
 
 ### `add` — add a local MP3 to the library
 
-Copy an existing MP3 file into the library and register it in metadata. The song is appended to the end of the list by default (highest prefix number).
+Copy an existing MP3 file into the library and register it in metadata. Use the source file's normal name; do not add the numeric prefix yourself. The song is appended to the end of the list by default (highest prefix number), and the correct prefix is generated automatically.
 
 ```bash
 playlist-sync add <FILE> [--position <N>]
@@ -263,6 +263,8 @@ playlist-sync add "C:/Downloads/My Favourite Track.mp3" -p 5
 ```
 
 > The file is copied into the library and all existing files are renumbered automatically.
+
+> If you use `--position`, the song is inserted there and the prefix is still assigned automatically by the tool.
 
 ---
 
