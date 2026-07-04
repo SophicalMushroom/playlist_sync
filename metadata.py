@@ -21,8 +21,8 @@ Schema
 
 Ordering convention
 -------------------
-  songs[0]  → prefix 00001  (bottom / oldest entry in the playlist)
-  songs[-1] → highest prefix (top / most recently added)
+  songs[0]  → prefix 00001  (first entry on YouTube playlist page)
+  songs[-1] → highest prefix (last entry on YouTube playlist page)
 """
 
 import json

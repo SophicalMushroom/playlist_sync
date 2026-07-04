@@ -324,7 +324,7 @@ def sync(dry_run: bool, yes: bool) -> None:
 
 @cli.command("add")
 @click.argument("file", type=click.Path(exists=True))
-@click.option("--position", "-p", type=int, default=None, help="1-indexed position to insert at (1 = bottom of list). Defaults to top.")
+@click.option("--position", "-p", type=int, default=None, help="1-indexed position to insert at (1 = first entry / lowest prefix number). Defaults to the end.")
 def add_song(file: str, position: int | None) -> None:
     store = _load_store()
     stem = os.path.splitext(os.path.basename(file))[0]

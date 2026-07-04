@@ -53,7 +53,7 @@ playlist_sync/
 - Every tracked song (title, YouTube ID, source, date added)
 - Named external devices
 
-Songs are stored as `<prefix> - <Title>.mp3` (e.g. `00001 - Never Gonna Give You Up.mp3`), where the prefix reflects the song's position in the playlist (oldest = lowest number).
+Songs are stored as `<prefix> - <Title>.mp3` (e.g. `00001 - Never Gonna Give You Up.mp3`), where the prefix reflects the song's position in the playlist as returned by YouTube (`00001` is the first entry).
 
 ---
 
@@ -165,7 +165,7 @@ playlist-sync init --playlist-url "https://www.youtube.com/playlist?list=PLxxxx"
 
 ### `sync` — pull new songs from the playlist
 
-Fetch the YouTube playlist and download any songs added since the last sync. Songs removed from the playlist are marked as **orphaned** (the MP3 is kept but no longer tracked as a YouTube source).
+Fetch the YouTube playlist and download any songs added since the last sync. Songs removed from the playlist are marked as **orphaned** (the MP3 is kept but no longer tracked as a YouTube source). Manual songs keep their relative position during renumbering, staying behind the same neighboring YouTube song when possible.
 
 By default, a preview of changes is shown and you are asked to confirm before anything is applied.
 
@@ -240,7 +240,7 @@ Devices:
 
 ### `add` — add a local MP3 to the library
 
-Copy an existing MP3 file into the library and register it in metadata. The song is inserted at the top of the list by default (highest prefix number).
+Copy an existing MP3 file into the library and register it in metadata. The song is appended to the end of the list by default (highest prefix number).
 
 ```bash
 playlist-sync add <FILE> [--position <N>]
@@ -249,15 +249,15 @@ playlist-sync add <FILE> [--position <N>]
 | Argument / Option | Description |
 |---|---|
 | `FILE` | Path to an existing `.mp3` file |
-| `--position`, `-p` | 1-indexed position to insert at (1 = bottom / oldest). Defaults to top of the list |
+| `--position`, `-p` | 1-indexed position to insert at (1 = first entry / lowest prefix number). Defaults to the end of the list |
 
 **Examples**
 
 ```bash
-# Add to the top (most recent) of the list
+# Add to the end of the list by default
 playlist-sync add "C:/Downloads/My Favourite Track.mp3"
 
-# Add at position 5 (5th from the bottom)
+# Add at position 5
 playlist-sync add "C:/Downloads/My Favourite Track.mp3" --position 5
 playlist-sync add "C:/Downloads/My Favourite Track.mp3" -p 5
 ```

@@ -18,11 +18,10 @@ def run_sync(store: MetadataStore, dry_run: bool = False) -> dict:
         for i, s in enumerate(store.songs)
         if s["source"] in ("manual", "orphaned")
     ]
-    old_total = len(store.songs)
+    old_songs = list(store.songs)
 
     print("Fetching playlist from YouTube...")
     playlist_entries = fetch_playlist(store.playlist_url)
-    playlist_entries.reverse()
     playlist_ids = [e["id"] for e in playlist_entries]
     playlist_id_set = set(playlist_ids)
     playlist_by_id = {e["id"]: e for e in playlist_entries}
@@ -107,7 +106,7 @@ def run_sync(store: MetadataStore, dry_run: bool = False) -> dict:
 
     # Remove reactivated songs from inert list to avoid duplicates
     inert_songs = [(i, s) for i, s in inert_songs if i not in reactivated_indices]
-    final_songs = _reinsert_inert_songs(inert_songs, yt_ordered, old_total)
+    final_songs = _reinsert_inert_songs(inert_songs, yt_ordered, old_songs)
 
     if not dry_run:
         renumber_files(library_path, final_songs)
@@ -150,23 +149,47 @@ def _find_file(library_path: str, title: str) -> str | None:
     return bare_match
 
 
-def _reinsert_inert_songs(inert_songs: list, yt_ordered: list, old_total: int) -> list:
-    result = list(yt_ordered)
+def _reinsert_inert_songs(
+    inert_songs: list, yt_ordered: list, old_songs: list
+) -> list:
+    """Re-insert manual/orphaned songs anchored behind their preceding YouTube song.
+
+    For each inert song, we find the closest YouTube song that appeared before it
+    in the old list and place it right after that song in the new ordering.
+    If no YouTube song preceded it, it goes at the beginning.
+    """
     if not inert_songs:
-        return result
-    if old_total == 0:
-        result.extend(song for _, song in inert_songs)
-        return result
+        return list(yt_ordered)
 
-    final_size = len(yt_ordered) + len(inert_songs)
-    # Pre-calculate target positions based on final list size
-    placements = []
+    # Build a position lookup for yt songs in the new order (by youtube_id)
+    new_pos_by_id: dict[str, int] = {}
+    for idx, song in enumerate(yt_ordered):
+        vid = song.get("youtube_id")
+        if vid:
+            new_pos_by_id[vid] = idx
+
+    # For each inert song, find its anchor (preceding YouTube song in old list)
+    anchored: list[tuple[int | None, int, dict]] = []
     for old_idx, song in sorted(inert_songs, key=lambda x: x[0]):
-        new_idx = round(old_idx / old_total * final_size)
-        new_idx = max(0, min(new_idx, len(yt_ordered)))
-        placements.append((new_idx, old_idx, song))
+        anchor_new_pos = None
+        # Walk backwards from old_idx to find the first youtube song
+        for j in range(old_idx - 1, -1, -1):
+            prev = old_songs[j]
+            vid = prev.get("youtube_id")
+            if vid and prev["source"] == "youtube" and vid in new_pos_by_id:
+                anchor_new_pos = new_pos_by_id[vid]
+                break
+        anchored.append((anchor_new_pos, old_idx, song))
 
-    # Insert from highest to lowest target index to avoid position shifting
-    for new_idx, _, song in sorted(placements, key=lambda x: (-x[0], -x[1])):
-        result.insert(new_idx, song)
+    # Insert from last to first so earlier inserts don't shift later positions
+    result = list(yt_ordered)
+    # Group by anchor and preserve relative order within the same anchor
+    # Sort by anchor position (None = -1 meaning beginning), then by old_idx
+    anchored.sort(key=lambda x: (x[0] if x[0] is not None else -1, x[1]))
+
+    # Insert in reverse so indices stay stable
+    for anchor_pos, _, song in reversed(anchored):
+        insert_at = (anchor_pos + 1) if anchor_pos is not None else 0
+        result.insert(insert_at, song)
+
     return result
