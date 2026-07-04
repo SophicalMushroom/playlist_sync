@@ -70,7 +70,6 @@ def import_library(playlist_url: str, library: str, similarity_threshold: float,
 
     click.echo("Fetching playlist from YouTube…")
     playlist_entries = fetch_playlist(store.playlist_url)
-    playlist_entries.reverse()  # oldest first → prefix 00001
 
     # --- Scan local library ---
     prefix_re = re.compile(r"^\d+ - (.+)\.mp3$")
@@ -213,26 +212,48 @@ def import_library(playlist_url: str, library: str, similarity_threshold: float,
             similarity_matches.append((yt_title, local_title, score, dur_note))
 
     # --- Build ordered song list ---
-    songs: list[dict] = []
+    # YouTube songs first, in playlist order.
+    yt_songs: list[dict] = []
+    yt_pos_by_id: dict[str, int] = {}
     for entry in playlist_entries:
         # Use the local file's title if matched; otherwise use the clean YouTube title
         title = yt_to_local.get(entry["id"], clean_filename(entry["title"]))
-        songs.append({
+        yt_pos_by_id[entry["id"]] = len(yt_songs)
+        yt_songs.append({
             "youtube_id": entry["id"],
             "title": title,
             "source": "youtube",
             "added_date": date.today().isoformat(),
         })
 
-    # Unmatched local files → manual songs (appended after all YouTube songs)
-    for exact_key, (_fname, title) in exact_titles.items():
-        if exact_key not in matched_local_keys:
-            songs.append({
+    # Map matched local title → youtube_id so we can locate anchors on disk.
+    local_key_to_yt_id: dict[str, str] = {
+        local_title.lower(): vid_id for vid_id, local_title in yt_to_local.items()
+    }
+
+    # Walk local files in on-disk order. Each unmatched (manual) file is anchored
+    # behind the most recent matched YouTube song so its relative position is kept.
+    manual_anchored: list[tuple[int | None, int, dict]] = []
+    last_anchor_pos: int | None = None
+    for disk_idx, (exact_key, (_fname, title)) in enumerate(exact_titles.items()):
+        if exact_key in local_key_to_yt_id:
+            last_anchor_pos = yt_pos_by_id.get(
+                local_key_to_yt_id[exact_key], last_anchor_pos
+            )
+        elif exact_key not in matched_local_keys:
+            manual_anchored.append((last_anchor_pos, disk_idx, {
                 "youtube_id": None,
                 "title": title,
                 "source": "manual",
                 "added_date": date.today().isoformat(),
-            })
+            }))
+
+    songs = list(yt_songs)
+    # Insert from highest anchor to lowest so earlier inserts don't shift later ones.
+    manual_anchored.sort(key=lambda x: (x[0] if x[0] is not None else -1, x[1]))
+    for anchor_pos, _, song in reversed(manual_anchored):
+        insert_at = (anchor_pos + 1) if anchor_pos is not None else 0
+        songs.insert(insert_at, song)
 
     store.replace_songs(songs)
     renumber_files(library, songs)
